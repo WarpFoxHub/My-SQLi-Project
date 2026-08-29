@@ -1,0 +1,20 @@
+[project]
+name = "my-sql-prodgect"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Ivan Pavlenko", email = "mlg228glm@gmail.com.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "bs4>=0.0.2",
+    "requests>=2.34.2",
+]
+
+[project.scripts]
+my-sql-prodgect = "my_sql_prodgect:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
