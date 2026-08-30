@@ -8,9 +8,10 @@ Early stage. Working code for specific labs, hardcoded in places. See commit his
 ## What's already available
 - SQL injection: login bypass via query commenting
 - SQL injection: server response comparison (diff-based detection)
+- SQL injection: blind extraction via boolean-based cookie injection (character-by-character password brute force)
 
 ## Stack
-Python, requests, BeautifulSoup
+Python, requests, BeautifulSoup, difflib
 
 ## Launch
 The lab URL is passed as an argument (not hardcoded in the code) —

