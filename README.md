@@ -9,9 +9,12 @@ Early stage. Working code for specific labs, hardcoded in places. See commit his
 - SQL injection: login bypass via query commenting
 - SQL injection: server response comparison (diff-based detection)
 - SQL injection: blind extraction via boolean-based cookie injection (character-by-character password brute force)
+- SQL injection: blind extraction via error-based technique (forcing a divide-by-zero error to leak data)
+- SQL injection: DBMS fingerprinting via time-based payloads (Oracle, PostgreSQL, MSSQL, MySQL/MariaDB)
+- SQL injection: error-based extraction via type casting (leaking values through invalid-cast error messages)
 
 ## Stack
-Python, requests, BeautifulSoup, difflib
+Python, requests, BeautifulSoup, difflib, re, urllib.parse
 
 ## Launch
 The lab URL is passed as an argument (not hardcoded in the code) —

